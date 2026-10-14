@@ -1,0 +1,42 @@
+# REVIEW.md
+
+## Defects Found in the Starter Implementation
+
+| # | Where (function / line) | What is wrong | How you'd notice it (test, input, or symptom) | How you fixed it |
+|---|---|---|---|---|
+| 1 | `health()` | The endpoint returns `{"status": "ok"}` without checking MongoDB connectivity. | Stop MongoDB and call `GET /health`. The endpoint still reports success. | Added `client.admin.command("ping")` and return HTTP 503 if the database check fails. |
+| 2 | `create_employee()` | Checking for an existing employee before insertion is not atomic, so concurrent requests can create duplicates without a unique database constraint. | Send concurrent requests with the same `emp_code`. | Added a unique index on `emp_code` and handle `DuplicateKeyError` to return HTTP 409. |
+| 3 | `create_employee()` | `shift_start` and `shift_end` are not validated, including the requirement that they must differ. | Submit an employee with identical shift times or malformed times. | **Still needs verification:** validate time formats and reject equal shift times. |
+| 4 | `create_employee()` | `created_at` is created as a naive datetime, making timestamp interpretation ambiguous. | Create an employee and compare its returned timestamp with UTC epoch milliseconds. | **Still needs verification:** use timezone-aware UTC timestamps and serialize consistently. |
+| 5 | `list_employees()` | Timestamp serialization assumes naive `created_at` values represent UTC by forcibly replacing timezone information. This can misinterpret already-aware timestamps. | Test serialization with both naive and timezone-aware datetimes. | **Partially addressed:** conversion exists; consistent UTC storage and serialization still need verification. |
+| 6 | `compute_late_minutes()` | The original calculation replaces the punch-in time with the shift start on the same date. This fails for overnight shifts and must respect the specified grace-period and whole-minute rules. | Test a punch-in exactly 10 minutes late, 10 minutes and 1 second late, and early-morning punches for overnight shifts. | Updated the helper to account for an overnight shift start date. The full set of boundary cases still needs testing. |
+| 7 | `compute_work_hours()` | Python's built-in `round()` uses ties-to-even behavior, which does not guarantee the required decimal half-up rounding. | Test a duration whose hours round exactly halfway between two hundredths. | **Still needs verification:** use decimal arithmetic with `ROUND_HALF_UP`. |
+| 8 | `compute_overtime()` | The original calculation does not correctly handle overnight shift-end times and does not enforce the required 30-minute overtime threshold. | Test an overnight shift and punch-outs 29 minutes and 30 minutes after shift end. | **Still needs implementation/verification:** anchor shift end to the correct date and apply the 30-minute threshold. |
+| 9 | `PunchInIn` / `punch_in()` | The original model does not strictly enforce epoch-millisecond integer inputs and allowed status values. | Submit a float, boolean, out-of-range timestamp, or unsupported status. | Added `StrictInt`, a `Literal` status restriction, and timestamp range validation. |
+| 10 | `punch_in()` | The original implementation does not robustly handle timezone conversion, second-level truncation, overnight attendance dates, and duplicate requests together. | Test punches near midnight, timestamps containing milliseconds, and concurrent punches for the same attendance date. | Added UTC timestamp handling, IST date calculation, second truncation, a unique `(emp_code, date)` index, and duplicate-key handling. Overnight late calculations still require complete verification. |
+| 11 | `list_attendance()` | It loads every matching attendance document into Python, sorts the entire result set, and only then paginates. This does not scale to the required data volume. | Populate a large collection and inspect memory use and query execution. | **Still needs implementation:** perform filtering, sorting, counting, and pagination in MongoDB. |
+| 12 | `list_attendance()` | The sort only uses date descending, omitting the required `emp_code` ascending tie-breaker. | Create multiple records for the same date and inspect their order. | **Still needs implementation:** sort in MongoDB by date descending and `emp_code` ascending. |
+| 13 | `list_attendance()` | It does not validate page bounds, page size, date formats, or reversed date ranges. | Submit page 0, page size above 100, malformed dates, or `date_from` after `date_to`. | **Still needs implementation:** validate the query parameters and return HTTP 422 for invalid inputs. |
+| 14 | `punch-out` endpoint | The starter implementation does not provide the required punch-out endpoint. | Call `POST /attendance/punch-out`. | Added an endpoint during development; complete contract and concurrency verification remains necessary. |
+| 15 | Attendance correction endpoint | The starter implementation does not provide manual attendance correction, derived-field recalculation, or correction history. | Call `PATCH /attendance/{emp_code}/{date}` and inspect validation and history. | Added an endpoint during development; verify no-op patches, status transitions, timestamp validation, and concurrent history updates. |
+| 16 | Monthly analytics | The starter implementation does not provide monthly employee attendance analytics. | Call `GET /analytics/employees/{emp_code}/monthly`. | Added an endpoint; working-day, half-day, rounding, and zero-working-day behavior still need verification. |
+| 17 | Department summary | The starter implementation does not provide department-level monthly analytics. | Call `GET /analytics/departments/summary`. | Added an endpoint; headcount, working-day counting, and aggregation correctness still need verification. |
+| 18 | Late leaderboard | The starter implementation does not provide late-arrival ranking. | Call `GET /analytics/leaderboard/late`. | Added a MongoDB aggregation and ranking; tie handling, rank-before-limit behavior, and employees with zero late minutes need verification against the contract. |
+| 19 | Department trend | The starter implementation does not provide daily department trend analytics. | Call `GET /analytics/departments/{department}/trend`. | Added an endpoint, but the current implementation generates dates in Python instead of using the required MongoDB `$densify`. This remains to be corrected. |
+| 20 | Admin explain endpoint | The starter implementation does not expose query-plan inspection. | Call `GET /admin/explain/{endpoint}`. | Added an initial endpoint using MongoDB `explain()`. Each endpoint's query parameters and execution plan still need full verification. |
+| 21 | Index creation | The original startup code does not establish all indexes needed by the contract. | Inspect MongoDB indexes and run explain plans on representative queries. | Added unique employee and attendance indexes and a date/employee compound index. Additional indexes may be needed after query-plan verification. |
+
+## Items Reviewed but Not Considered Defects
+
+- **Default shift times:** `09:30` and `18:30` are reasonable defaults and are not defects by themselves, provided they match the API contract.
+- **Default pagination values:** Page 1 and page size 20 are appropriate defaults. The defect is failing to validate invalid values and enforce the maximum page size.
+- **Nullable punch-out and work-hours fields:** These are appropriate for an attendance record that has been punched in but not yet punched out.
+- **Attendance history initialized as an empty list:** This is appropriate for a newly created record with no manual corrections.
+- **Using MongoDB:** MongoDB is appropriate for the required persistence layer. The problems are with query design, validation, and concurrency handling, not the choice of database.
+- **HTTP 201 for successful creation and HTTP 200 for successful reads:** These status codes are appropriate for the corresponding operations.
+
+## Remaining Work
+
+The implementation has been exercised through Swagger, and the tested endpoints have returned successful responses. However, successful responses alone do not establish full contract compliance.
+
+Remaining work includes completing timestamp and rounding edge cases, correcting overnight overtime and late calculations, moving attendance pagination and trend densification into MongoDB, validating correction and punch-out concurrency, checking query plans and indexes, and running the full test suite.
